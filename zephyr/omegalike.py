@@ -3,6 +3,134 @@ import SimPEG
 from SimPEG import Utils
 import scipy.sparse as sp
 
+def setupClaytonEngquist (diagonals, k, dx, dz):
+
+    beta    = 0.14
+    eps     = 1e-20
+    dims    = diagonals['BE'].shape
+
+    dxx     = dx*dx
+    dzz     = dz*dz
+    ddiag   = np.sqrt(dx**2 + dz**2)
+
+    # Avoid dividing by zero
+    k           = k.copy()
+    k[k < eps]  = eps
+
+    # Corner terms
+    babBL   = 0.25j*k[ 1, 1]*ddiag
+    babTL   = 0.25j*k[-2, 1]*ddiag
+    babBR   = 0.25j*k[ 1,-2]*ddiag
+    babTR   = 0.25j*k[-2,-2]*ddiag
+
+    raBL    = (1 + babBL) / (1 - babBL)
+    raTL    = (1 + babTL) / (1 - babTL)
+    raBR    = (1 + babBR) / (1 - babBR)
+    raTR    = (1 + babTR) / (1 - babTR)
+
+    # Temporary arrays for terms
+    cc3     = np.zeros(dims, dtype=np.complex128)
+
+    # Intermediate terms for left / right
+    rr1x    = 5j/dx
+    rr3x    = 2j*dzz/dx
+    rr1z    = 5j/dz
+    rr3z    = 2j*dxx/dz
+
+    cc3[1:-1,   0]  = rr3x*k[ :  ,   1]
+    cc3[1:-1,  -1]  = rr3x*k[ :  ,  -2]
+    cc3[   0,1:-1]  = rr3z*k[   1, :  ]
+    cc3[  -1,1:-1]  = rr3z*k[  -2, :  ]
+
+    cc1             = beta * cc3
+    cc1[1:-1,   0] += rr1x/k[ :  ,   1]
+    cc1[1:-1,  -1] += rr1x/k[ :  ,  -2]
+    cc1[   0,1:-1] += rr1z/k[   1, :  ]
+    cc1[  -1,1:-1] += rr1z/k[  -2, :  ]
+
+    aaa     = 0.5 - cc1
+    abc     = aaa - 1
+    bb      = 2*cc1 - 1 - cc3
+    b       = bb + 2
+
+    cc3x    = rr3x*k
+    cc1x    = rr1x/k + beta*cc3x
+    shiftx  = 1j*k*dz #!
+    aaax    = 5 - cc1x
+    abcx    = aaax - 1
+    bbx     = 2*cc1x - 1 - cc3x
+    bx      = bbx + 2
+
+    # Intermediate terms for bottom / top
+    cc3z    = rr3z*k
+    cc1z    = rr1z/k + beta*cc3z
+    shiftz  = 1j*k*dz #!
+    aaaz    = 5 - cc1z
+    abcz    = aaaz - 1
+    bbz     = 2*cc1z - 1 - cc3z
+    bz      = bbz + 2
+
+    # Set up local variables to point at these arrays
+    AD = diagonals['AD']
+    DD = diagonals['DD']
+    CD = diagonals['CD']
+    AA = diagonals['AA']
+    BE = diagonals['BE']
+    CC = diagonals['CC']
+    AF = diagonals['AF']
+    FF = diagonals['FF']
+    CF = diagonals['CF']
+
+    # Visual key for finite-difference terms
+    # (per Pratt and Worthington, 1990)
+    # Modified for zero bottom left
+    #
+    #   This         Original
+    # AF FF CF  vs.  AD DD CD
+    # AA BE CC  vs.  AA BE CC
+    # AD DD CD  vs.  AF FF CF
+
+    # Center term (no corners)
+    BE[   1,1:-1] = bz/dzz
+    BE[  -2,1:-1] = bz/dzz
+    BE[1:-1,   1] = bx/dxx
+    BE[1:-1,  -2] = bx/dxx
+    BE[   0,   0] = 
+    BE[  -1,   0] = 
+    BE[   0,  -1] = 
+    BE[  -1,  -1] = 
+
+    # Left edge zeros
+    AA[ :  ,   0] = 0
+    AD[ :  ,   0] = 0
+    AF[ :  ,   0] = 0
+
+    # Bottom edge zeros
+    AD[   0, :  ] = 0
+    DD[   0, :  ] = 0
+    CD[   0, :  ] = 0
+
+    # Top edge zeros
+    AF[  -1, :  ] = 0
+    FF[  -1, :  ] = 0
+    CF[  -1, :  ] = 0
+
+    # Right edge zeros
+    CD[ :  ,  -1] = 0
+    CC[ :  ,  -1] = 0
+    CF[ :  ,  -1] = 0
+
+    # Topedge
+    be      = b/dxx
+    aa      = abc/dxx
+    cc      = abc/dxx
+    dd      = 0
+    ff      = -bb*shiftx/dxx
+    ad      = 0
+    cf      = -aaa*shiftx/dxx
+    af      = -aaa*shiftx/dxx
+    cd      = 0
+
 # NOT CONVINCED THIS WORKS
 def setupFreeSurface (diagonals, freesurf):
     keys = diagonals.keys()
@@ -69,6 +197,7 @@ def initHelmholtzNinePointCE (sc):
     c = np.pad(c, pad_width=1, mode='edge')
     rho = np.pad(rho, pad_width=1, mode='edge')
     K = omega**2 / c**2
+    k = np.sqrt(K) # NB: This should be modified for 2.5D case
 
     # Visual key for finite-difference terms
     # (per Pratt and Worthington, 1990)
@@ -100,6 +229,8 @@ def initHelmholtzNinePointCE (sc):
     dxx = dx**2
     dzz = dz**2
     dxz = 2*dx*dz
+
+    # THE DEFINITION OF TOP AND BOTTOM MAY BE WRONG
 
     # Buoyancies
     bMM = 1. / rho[0:-2,0:-2] # bottom left
@@ -156,6 +287,8 @@ def initHelmholtzNinePointCE (sc):
         'FF':   dcoef*kPE + acoef*f1,
         'CF':   ecoef*kPP + bcoef*c2,
     }
+
+    #setupClaytonEngquist(diagonals, k, dx, dz)
 
     # NOT CONVINCED THIS WORKS
     if 'freeSurf' in sc:
